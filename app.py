@@ -1,4 +1,25 @@
 import os
+import sys
+import subprocess
+
+# Fix basicsr degradations import bug BEFORE importing
+def fix_basicsr():
+    try:
+        import basicsr.data.degradations as deg
+        content = open(deg.__file__).read()
+        if 'functional_tensor' in content:
+            new_content = content.replace(
+                'from torchvision.transforms.functional_tensor import rgb_to_grayscale',
+                'from torchvision.transforms.functional import rgb_to_grayscale'
+            )
+            with open(deg.__file__, 'w') as f:
+                f.write(new_content)
+            print("Fixed basicsr!")
+    except Exception as e:
+        print(f"Fix skipped: {e}")
+
+fix_basicsr()
+
 import torch
 import cv2
 import gc
@@ -22,7 +43,7 @@ app.add_middleware(
     expose_headers=["X-Original-Size", "X-Upscaled-Size", "X-Scale"]
 )
 
-# Download model on startup
+# Download model
 os.makedirs("weights", exist_ok=True)
 model_path = "weights/RealESRGAN_x4plus.pth"
 
@@ -32,10 +53,7 @@ if not os.path.exists(model_path):
     urllib.request.urlretrieve(url, model_path)
     print("Model downloaded!")
 
-# Load model
 print("Loading model...")
-use_gpu = torch.cuda.is_available()
-
 model = RRDBNet(
     num_in_ch=3,
     num_out_ch=3,
@@ -52,11 +70,11 @@ upsampler = RealESRGANer(
     tile=200,
     tile_pad=10,
     pre_pad=0,
-    half=use_gpu,
-    gpu_id=0 if use_gpu else None
+    half=False,
+    gpu_id=None
 )
 
-print(f"Model ready on: {'GPU' if use_gpu else 'CPU'}")
+print("Model ready!")
 
 @app.get("/")
 def home():
@@ -64,7 +82,7 @@ def home():
         "service": "PinAscend",
         "status": "running",
         "model": "RealESRGAN_x4plus",
-        "gpu": use_gpu
+        "gpu": torch.cuda.is_available()
     }
 
 @app.get("/health")
@@ -84,11 +102,9 @@ async def upscale_image(file: UploadFile = File(...)):
                 content={"error": "Invalid image"}
             )
 
-        # Limit size for CPU (prevent timeout)
-        max_size = 400
         h, w = img.shape[:2]
-        if max(h, w) > max_size:
-            scale = max_size / max(h, w)
+        if max(h, w) > 400:
+            scale = 400 / max(h, w)
             img = cv2.resize(img, (int(w*scale), int(h*scale)))
 
         orig_h, orig_w = img.shape[:2]
